@@ -1,0 +1,155 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ml-platform
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ml-api-config
+  namespace: ml-platform
+data:
+  MODEL_VERSION: "1.0.0"
+  PORT: "5000"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ml-api-secrets
+  namespace: ml-platform
+type: Opaque
+stringData:
+  api-key: "your-secret-api-key-here"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ml-api
+  namespace: ml-platform
+  labels:
+    app: ml-api
+    version: v1
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: ml-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: ml-api
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "5000"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+      - name: ml-api
+        image: sentiment-api:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 5000
+          name: http
+        env:
+        - name: MODEL_VERSION
+          valueFrom:
+            configMapKeyRef:
+              name: ml-api-config
+              key: MODEL_VERSION
+        - name: PORT
+          valueFrom:
+            configMapKeyRef:
+              name: ml-api-config
+              key: PORT
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 5000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        volumeMounts:
+        - name: model-storage
+          mountPath: /app/models
+      volumes:
+      - name: model-storage
+        persistentVolumeClaim:
+          claimName: ml-models-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ml-api-service
+  namespace: ml-platform
+  labels:
+    app: ml-api
+spec:
+  type: LoadBalancer
+  selector:
+    app: ml-api
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 5000
+    name: http
+  sessionAffinity: None
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ml-models-pvc
+  namespace: ml-platform
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ml-api-hpa
+  namespace: ml-platform
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ml-api
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
